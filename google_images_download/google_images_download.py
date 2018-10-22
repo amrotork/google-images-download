@@ -32,7 +32,9 @@ import datetime
 import json
 import re
 import codecs
+import pandas as pd
 import socket
+import random
 
 args_list = ["keywords", "keywords_from_file", "prefix_keywords", "suffix_keywords",
              "limit", "format", "color", "color_type", "usage_rights", "size",
@@ -693,6 +695,7 @@ class googleimagesdownload:
         errorCount = 0
         i = 0
         count = 1
+
         while count < limit+1:
             object, end_content = self._get_next_item(page)
             if object == "no_links":
@@ -731,10 +734,6 @@ class googleimagesdownload:
 
                 page = page[end_content:]
             i += 1
-        if count < limit:
-            print("\n\nUnfortunately all " + str(
-                limit) + " could not be downloaded because some images were not downloadable. " + str(
-                count-1) + " is all we got for this search filter!")
         return items,errorCount,abs_path
 
 
@@ -835,46 +834,90 @@ class googleimagesdownload:
 
                     self.create_directories(main_directory,dir_name,arguments['thumbnail'])     #create directories in OS
 
-                    params = self.build_url_parameters(arguments)     #building URL with params
 
-                    url = self.build_search_url(search_term,params,arguments['url'],arguments['similar_images'],arguments['specific_site'],arguments['safe_search'])      #building main search url
+                    all_items = list()
+                    used_seed = list()
+                    args = arguments.copy()
 
-                    if limit < 101:
-                        raw_html = self.download_page(url)  # download page
-                    else:
-                        raw_html = self.download_extended_page(url,arguments['chromedriver'])
+                    total_error_count = 0
 
-                    print("Starting Download...")
-                    items,errorCount,abs_path = self._get_all_items(raw_html,main_directory,dir_name,limit,arguments)    #get all image items and download images
-                    paths[pky + search_keyword[i] + sky] = abs_path
+                    while len(all_items) < limit:
+                        print("############################################## Start Iteration")
+                        print("Arguments : ", args)
+                        params = self.build_url_parameters(args)     #building URL with params
 
-                    #dumps into a json file
+                        print("Params : " , params)
+                        url = self.build_search_url(search_term,params,args['url'],args['similar_images'],
+                                                    args['specific_site'],args['safe_search'])      #building main search url
+
+                        if limit < 101:
+                            raw_html = self.download_page(url)  # download page
+                        else:
+                            raw_html = self.download_extended_page(url,args['chromedriver'])
+
+                        print("Starting Download...")
+
+
+                        items,errorCount,abs_path = self._get_all_items(raw_html,main_directory,dir_name,limit,args)    #get all image items and download images
+                        paths[pky + search_keyword[i] + sky] = abs_path
+
+                        total_error_count += errorCount
+
+                        all_items.extend(items)
+
+                        print("Total collected in the current iteration: {:d}".format(len(all_items)))
+
+                        similar_url = None
+                        while True:
+                            pick_seed = random.choice(all_items)
+                            if pick_seed['image_link'] in used_seed:
+                                continue
+
+                            similar_url = pick_seed["image_link"]
+                            used_seed.append(similar_url)
+                            break
+
+                        ## Continue search
+                        args["similar_images"] = similar_url
+
+
+                        #Related images
+                        if arguments['related_images']:
+                            print("\nGetting list of related keywords...this may take a few moments")
+                            tabs = self.get_all_tabs(raw_html)
+                            for key, value in tabs.items():
+                                final_search_term = (search_term + " - " + key)
+                                print("\nNow Downloading - " + final_search_term)
+                                if limit < 101:
+                                    new_raw_html = self.download_page(value)  # download page
+                                else:
+                                    new_raw_html = self.download_extended_page(value,arguments['chromedriver'])
+                                self.create_directories(main_directory, final_search_term,arguments['thumbnail'])
+                                self._get_all_items(new_raw_html, main_directory, search_term + " - " + key, limit,arguments)
+
+
+
+                    if len(all_items) < limit:
+                        print("\n\nUnfortunately all " + str(limit) +
+                              " could not be downloaded because some images were not downloadable. " +
+                              str(len(all_items)) + " is all we got for this search filter!")
+
+                    # dumps into a json file
                     if arguments['extract_metadata']:
                         try:
                             if not os.path.exists("logs"):
                                 os.makedirs("logs")
                         except OSError as e:
                             print(e)
-                        json_file = open("logs/"+search_keyword[i]+".json", "w")
-                        json.dump(items, json_file, indent=4, sort_keys=True)
+                        json_file = open("logs/" + search_keyword[i] + ".json", "w")
+                        json.dump(all_items, json_file, indent=4, sort_keys=True)
                         json_file.close()
 
-                    #Related images
-                    if arguments['related_images']:
-                        print("\nGetting list of related keywords...this may take a few moments")
-                        tabs = self.get_all_tabs(raw_html)
-                        for key, value in tabs.items():
-                            final_search_term = (search_term + " - " + key)
-                            print("\nNow Downloading - " + final_search_term)
-                            if limit < 101:
-                                new_raw_html = self.download_page(value)  # download page
-                            else:
-                                new_raw_html = self.download_extended_page(value,arguments['chromedriver'])
-                            self.create_directories(main_directory, final_search_term,arguments['thumbnail'])
-                            self._get_all_items(new_raw_html, main_directory, search_term + " - " + key, limit,arguments)
+                    df = pd.DataFrame(all_items)
+                    print(df.head())
 
                     i += 1
-                    print("\nErrors: " + str(errorCount) + "\n")
+                    print("\nErrors: " + str(total_error_count) + "\n")
         if arguments['print_paths']:
             print(paths)
         return paths
